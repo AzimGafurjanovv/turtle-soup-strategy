@@ -82,6 +82,9 @@ def scan_all_markets():
             continue
         try:
             df = DataLoader.load_csv(fp)
+            # Bayat veri koruması: Son mum 24 saatten eskiyse atla (tatil/delist olmuş eski veriler sinyal üretmesin)
+            if (pd.Timestamp.now() - df.index[-1]).total_seconds() > 24 * 3600:
+                continue
             df_sig = strat.generate_signals(df)
             
             cur_row = df_sig.iloc[-1]
