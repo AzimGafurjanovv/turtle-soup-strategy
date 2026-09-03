@@ -36,10 +36,34 @@ GLOBAL_SCAN_CACHE = {
     "last_updated": "Başlatılıyor..."
 }
 CACHE_LOCK = threading.Lock()
-SENT_TELEGRAM_SIGNALS = set()
+# Telegram Mükerrer Mesaj Koruması (Disk Kayıtlı - Asla Spam Yapmaz)
+SENT_SIGNALS_FILE = os.path.join(DATA_DIR, "sent_signals_cache.json")
+
+def load_sent_signals():
+    try:
+        if os.path.exists(SENT_SIGNALS_FILE):
+            with open(SENT_SIGNALS_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+    except Exception:
+        pass
+    return set()
+
+def save_sent_signal(key):
+    SENT_TELEGRAM_SIGNALS.add(key)
+    try:
+        # Son 500 sinyali sakla
+        items = list(SENT_TELEGRAM_SIGNALS)[-500:]
+        with open(SENT_SIGNALS_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f)
+    except Exception:
+        pass
+
+SENT_TELEGRAM_SIGNALS = load_sent_signals()
+
 
 def scan_all_markets():
-    strat_config = StrategyConfig(risk_reward_ratio=2.0, min_sweep_depth_pct=0.0008, use_trend_filter=True)
+    # Saf Turtle Soup: 200 EMA filtresi canlı tarayıcıda sinyali boğmasın (Tüm likidite avlarını yakalar)
+    strat_config = StrategyConfig(risk_reward_ratio=2.0, min_sweep_depth_pct=0.0004, use_trend_filter=False)
     strat = TurtleSoupStrategy(strat_config)
     results = []
     recent_feed = []
@@ -72,13 +96,10 @@ def scan_all_markets():
             h4_low = float(cur_row["prev_4h_low"]) if not np.isnan(cur_row["prev_4h_low"]) else cur_price * 0.99
             ema = float(cur_row["ema_200"]) if not np.isnan(cur_row["ema_200"]) else cur_price
 
-            # 4H Seansı Filtresi: Yalnızca mevcut aktif 4H seansını tara (Eski kapanmış 4H seansları elenir)
-            cur_time = df_sig.index[-1]
-            cur_4h_start = cur_time.floor('4h')
-            
-            current_4h_slice = df_sig[df_sig.index >= cur_4h_start]
+            # Son 3 saatteki (36 bar) tüm taze likidite avlarını ve sinyalleri tara
+            lookback_bars = min(36, len(df_sig))
+            current_4h_slice = df_sig.iloc[-lookback_bars:]
             sig_indices = np.where(current_4h_slice["signal"].values != 0)[0]
-            lookback_bars = len(current_4h_slice)
 
             state = "⚪ Range İçinde"
             sig_type = ""
@@ -219,10 +240,12 @@ def background_market_scanner_worker():
             with CACHE_LOCK:
                 feed = GLOBAL_SCAN_CACHE.get("recent_feed", [])
             for item in feed:
-                if item.get("status") == "YENİ" and item.get("mins_ago", 99) <= 10:
-                    sig_key = f"{item['symbol']}_{item['direction']}_{item['entry_price']}_{item['time']}"
+                # Sadece taze (son 15 dk) ve daha önce HİÇ gönderilmemiş sinyalleri 1 KEZ gönder
+                if item.get("mins_ago", 99) <= 15:
+                    # Fiyat dalgalanmasından etkilenmeyen sabit benzersiz anahtar
+                    sig_key = f"{item['symbol']}_{item['direction']}_{item['time']}"
                     if sig_key not in SENT_TELEGRAM_SIGNALS:
-                        SENT_TELEGRAM_SIGNALS.add(sig_key)
+                        save_sent_signal(sig_key)
                         try:
                             TelegramNotifier.send_signal_alert({
                                 "symbol": item["symbol"],
@@ -231,13 +254,13 @@ def background_market_scanner_worker():
                                 "price": item["entry_price"],
                                 "sl": item["sl"],
                                 "tp": item["tp"],
-                                "h4_high": 0,
-                                "h4_low": 0,
+                                "h4_high": item.get("h4_high", 0),
+                                "h4_low": item.get("h4_low", 0),
                                 "ema_state": "Canlı Sinyal",
                                 "tv": item["tv"]
                             })
-                        except Exception:
-                            pass
+                        except Exception as te:
+                            print(f"[Telegram Alert Error] {te}")
         except Exception as e:
             print(f"[Worker Error] {e}")
         time.sleep(60)
