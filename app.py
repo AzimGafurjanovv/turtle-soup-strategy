@@ -44,6 +44,14 @@ def scan_all_markets():
     results = []
     recent_feed = []
 
+    # Canlı Binance anlık fiyat haritası
+    binance_live = {}
+    try:
+        from live_fetcher import LiveDataFetcher
+        binance_live = LiveDataFetcher.get_all_binance_live_prices()
+    except Exception:
+        pass
+
     for item in DataLoader.ASSETS:
         fp = os.path.join(DATA_DIR, item["file"])
         if not os.path.exists(fp):
@@ -54,6 +62,12 @@ def scan_all_markets():
             
             cur_row = df_sig.iloc[-1]
             cur_price = float(cur_row["close"])
+            # Kripto ise anlık canlı Binance fiyatını al
+            clean_sym = item["symbol"].replace("/", "").replace(" ", "").upper()
+            if not clean_sym.endswith("USDT") and item["category"] == "crypto":
+                clean_sym += "USDT"
+            if clean_sym in binance_live:
+                cur_price = float(binance_live[clean_sym])
             h4_high = float(cur_row["prev_4h_high"]) if not np.isnan(cur_row["prev_4h_high"]) else cur_price * 1.01
             h4_low = float(cur_row["prev_4h_low"]) if not np.isnan(cur_row["prev_4h_low"]) else cur_price * 0.99
             ema = float(cur_row["ema_200"]) if not np.isnan(cur_row["ema_200"]) else cur_price
@@ -155,6 +169,7 @@ def scan_all_markets():
                 "file": item["file"],
                 "tv": item["tv"],
                 "category": item["category"],
+                "dec": item.get("dec", 2),
                 "price": round(cur_price, item["dec"]),
                 "h4_high": round(h4_high, item["dec"]),
                 "h4_low": round(h4_low, item["dec"]),
@@ -193,7 +208,7 @@ def background_market_scanner_worker():
             # 1. Her 60 saniyede bir Binance & NASDAQ borsalarından gerçek canlı mumları indir
             try:
                 from live_fetcher import LiveDataFetcher
-                LiveDataFetcher.sync_all_priority_assets(DataLoader.ASSETS, DATA_DIR)
+                LiveDataFetcher.sync_all_assets_concurrent(DataLoader.ASSETS, DATA_DIR, max_workers=6)
             except Exception as fe:
                 pass
 
@@ -740,6 +755,23 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <script>
         let ALL_ASSETS = [];
+
+        function formatPrice(val, dec = 2) {
+            if (val === undefined || val === null || isNaN(val)) return '$0.00';
+            const num = Number(val);
+            if (num === 0) return '$0.00';
+            if (num < 0.0001) {
+                return '$' + num.toFixed(dec > 4 ? dec : 7);
+            }
+            if (num < 1) {
+                return '$' + num.toFixed(dec > 4 ? dec : 4);
+            }
+            if (num < 10) {
+                return '$' + num.toFixed(dec > 2 ? dec : 3);
+            }
+            return '$' + num.toLocaleString('en-US', { minimumFractionDigits: (dec > 2 ? 2 : dec), maximumFractionDigits: (dec > 2 ? 2 : dec) });
+        }
+
         let selectedCoinSymbols = new Set();
         let livePairsData = [];
         let activeStatusFilter = 'all';
@@ -1039,11 +1071,11 @@ HTML_PAGE = """<!DOCTYPE html>
                     <td style="font-weight: 800; color: #fff;">${f.symbol} <span style="font-size: 10px; color: #94a3b8; font-weight: normal;">(${f.name})</span></td>
                     <td><span class="badge ${isLong ? 'badge-green' : 'badge-red'}">${f.direction}</span></td>
                     <td style="color: #cbd5e1;">${f.mins_ago === 0 ? 'Tam Şimdi' : f.mins_ago + ' dk önce'} (${f.time})</td>
-                    <td style="font-weight: 600; color: #fff;">$${f.entry_price.toLocaleString()}</td>
-                    <td style="font-weight: 600; color: #818cf8;">$${f.cur_price.toLocaleString()}</td>
+                    <td style="font-weight: 600; color: #fff;">$${formatPrice(f.entry_price, f.dec).replace("$", "")}</td>
+                    <td style="font-weight: 600; color: #818cf8;">$${formatPrice(f.cur_price, f.dec).replace("$", "")}</td>
                     <td style="font-weight: 800; color: ${pnlPositive ? '#34d399' : '#f87171'};">${pnlPositive ? '+' : ''}${f.pnl_pct.toFixed(2)}%</td>
                     <td>${statusBadge}</td>
-                    <td style="font-size: 10px; color: #94a3b8;">SL: $${f.sl} | TP: $${f.tp}</td>
+                    <td style="font-size: 10px; color: #94a3b8;">SL: ${formatPrice(f.sl, f.dec)} | TP: ${formatPrice(f.tp, f.dec)}</td>
                     <td>
                         <div style="display: flex; gap: 4px;">
                             <button onclick="goToBacktestForAsset('${f.file || (f.symbol.replace('/', '') + '_5m.csv')}')" class="btn-sm" style="font-size: 10px;">📊 Test Et</button>
@@ -1120,12 +1152,12 @@ HTML_PAGE = """<!DOCTYPE html>
                             <span style="font-size: 10px; color: #94a3b8; font-weight: normal;">(${p.name})</span>
                             ${isSig ? `<span class="badge ${isLongSig ? 'badge-green' : 'badge-red'}" style="font-size: 9px; font-weight: 800;">🔥 ${p.signal_type}</span>` : ''}
                         </div>
-                        <span class="signal-price">$${p.price.toLocaleString()}</span>
+                        <span class="signal-price">${formatPrice(p.price, p.dec)}</span>
                     </div>
 
                     <div style="display: flex; justify-content: space-between; font-size: 10px; font-family: monospace; color: #94a3b8;">
-                        <span style="color: #f87171;">4H High: $${p.h4_high.toLocaleString()}</span>
-                        <span style="color: #34d399;">4H Low: $${p.h4_low.toLocaleString()}</span>
+                        <span style="color: #f87171;">4H High: ${formatPrice(p.h4_high, p.dec)}</span>
+                        <span style="color: #34d399;">4H Low: ${formatPrice(p.h4_low, p.dec)}</span>
                     </div>
 
                     <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -1136,15 +1168,15 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="signal-targets">
                         <div class="target-item">
                             <span class="target-label">GİRİŞ (SEVİYE)</span>
-                            <span class="target-val" style="color: #818cf8;">${p.entry > 0 ? '$' + p.entry.toLocaleString() : (p.state.includes('Sweep') ? '🟡 Reclaim Bekleniyor' : '$' + p.price.toLocaleString())}</span>
+                            <span class="target-val" style="color: #818cf8;">${p.entry > 0 ? formatPrice(p.entry, p.dec) : (p.state.includes('Sweep') ? '🟡 Reclaim Bekleniyor' : formatPrice(p.price, p.dec))}</span>
                         </div>
                         <div class="target-item">
                             <span class="target-label">STOP LOSS</span>
-                            <span class="target-val" style="color: #f87171;">${p.sl > 0 ? '$' + p.sl.toLocaleString() : '4H Fitil Seviyesi'}</span>
+                            <span class="target-val" style="color: #f87171;">${p.sl > 0 ? formatPrice(p.sl, p.dec) : '4H Fitil Seviyesi'}</span>
                         </div>
                         <div class="target-item">
                             <span class="target-label">TAKE PROFIT (1:2)</span>
-                            <span class="target-val" style="color: #34d399;">${p.tp > 0 ? '$' + p.tp.toLocaleString() : '1:2 R:R Hedefi'}</span>
+                            <span class="target-val" style="color: #34d399;">${p.tp > 0 ? formatPrice(p.tp, p.dec) : '1:2 R:R Hedefi'}</span>
                         </div>
                     </div>
 
