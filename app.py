@@ -88,6 +88,7 @@ def scan_all_markets():
             df_sig = strat.generate_signals(df)
             
             cur_row = df_sig.iloc[-1]
+            prev_row = df_sig.iloc[-2] if len(df_sig) > 1 else cur_row
             cur_price = float(cur_row["close"])
             # Kripto ise anlık canlı Binance fiyatını al
             clean_sym = item["symbol"].replace("/", "").replace(" ", "").upper()
@@ -98,6 +99,31 @@ def scan_all_markets():
             h4_high = float(cur_row["prev_4h_high"]) if not np.isnan(cur_row["prev_4h_high"]) else cur_price * 1.01
             h4_low = float(cur_row["prev_4h_low"]) if not np.isnan(cur_row["prev_4h_low"]) else cur_price * 0.99
             ema = float(cur_row["ema_200"]) if not np.isnan(cur_row["ema_200"]) else cur_price
+            
+            # 200 EMA Kesişim ve Konum Analizi (Canlı Mum)
+            prev_c = float(prev_row["close"])
+            prev_ema = float(prev_row["ema_200"]) if not np.isnan(prev_row["ema_200"]) else prev_c
+            diff_ema_pct = round(((cur_price - ema) / ema) * 100, 2)
+            
+            card_ema_crossed = False
+            if prev_c <= prev_ema and cur_price > ema:
+                card_ema_status = f"⚡ 200 EMA Yukarı Kırdı (Golden Cross) (+{diff_ema_pct}%)"
+                card_ema_badge = "⚡ 200 EMA Yukarı Kırdı"
+                card_ema_crossed = True
+            elif prev_c >= prev_ema and cur_price < ema:
+                card_ema_status = f"⚡ 200 EMA Aşağı Kırdı (Death Cross) ({diff_ema_pct}%)"
+                card_ema_badge = "⚡ 200 EMA Aşağı Kırdı"
+                card_ema_crossed = True
+            elif cur_row["low"] <= ema <= cur_row["high"]:
+                card_ema_status = f"⚡ 200 EMA Bandında / Test ({diff_ema_pct:+}%)"
+                card_ema_badge = "⚡ 200 EMA Kesişim/Test"
+                card_ema_crossed = True
+            elif cur_price > ema:
+                card_ema_status = f"🟢 200 EMA Üstünde (+{diff_ema_pct}%)"
+                card_ema_badge = f"🟢 EMA Üstü (+{diff_ema_pct}%)"
+            else:
+                card_ema_status = f"🔴 200 EMA Altında ({diff_ema_pct}%)"
+                card_ema_badge = f"🔴 EMA Altı ({diff_ema_pct}%)" 
 
             # Son 3 saatteki (36 bar) tüm taze likidite avlarını ve sinyalleri tara
             lookback_bars = min(36, len(df_sig))
@@ -184,6 +210,12 @@ def scan_all_markets():
                         "sl": sl_val,
                         "tp": tp_val,
                         "pnl_pct": pnl_pct,
+                        "dec": item.get("dec", 2),
+                        "ema_val": round(ema, item["dec"]),
+                        "ema_status": card_ema_status,
+                        "ema_badge_text": card_ema_badge,
+                        "ema_crossed": card_ema_crossed,
+                        "ema_pos": "Üstünde" if cur_price >= ema else "Altında",
                         "status": "YENİ" if is_new else "AKTİF"
                     })
 
@@ -198,7 +230,12 @@ def scan_all_markets():
                 "h4_high": round(h4_high, item["dec"]),
                 "h4_low": round(h4_low, item["dec"]),
                 "state": state,
-                "ema_state": "Boğa (Fiyat > EMA)" if cur_price > ema else "Ayı (Fiyat < EMA)",
+                "ema_val": round(ema, item["dec"]),
+                "ema_status": card_ema_status,
+                "ema_badge_text": card_ema_badge,
+                "ema_crossed": card_ema_crossed,
+                "ema_pos": "Üstünde" if cur_price >= ema else "Altında",
+                "ema_state": card_ema_status,
                 "signal_type": sig_type,
                 "entry": entry_val,
                 "sl": sl_val,
@@ -250,6 +287,7 @@ def background_market_scanner_worker():
                     if sig_key not in SENT_TELEGRAM_SIGNALS:
                         save_sent_signal(sig_key)
                         try:
+                            tg_ema_text = f"{item.get('ema_status', 'N/A')} (EMA: ${item.get('ema_val', '')})"
                             TelegramNotifier.send_signal_alert({
                                 "symbol": item["symbol"],
                                 "name": item["name"],
@@ -259,7 +297,7 @@ def background_market_scanner_worker():
                                 "tp": item["tp"],
                                 "h4_high": item.get("h4_high", 0),
                                 "h4_low": item.get("h4_low", 0),
-                                "ema_state": "Canlı Sinyal",
+                                "ema_state": tg_ema_text,
                                 "tv": item["tv"]
                             })
                         except Exception as te:
@@ -551,6 +589,9 @@ HTML_PAGE = """<!DOCTYPE html>
                     <button class="chip" onclick="filterSignals('stock', this)">📈 Hisseler (Tesla, Nvidia, Apple...)</button>
                     <button class="chip" onclick="filterSignals('crypto', this)">🪙 Top 50 Kripto</button>
                     <button class="chip" onclick="filterSignals('forex', this)">💱 Forex</button>
+                    <button class="chip" onclick="filterSignals('ema_cross', this)" style="border-color: rgba(234, 179, 8, 0.4); color: #facc15;">⚡ 200 EMA Kesenler</button>
+                    <button class="chip" onclick="filterSignals('ema_above', this)" style="border-color: rgba(16, 185, 129, 0.4); color: #34d399;">📈 200 EMA Üstü</button>
+                    <button class="chip" onclick="filterSignals('ema_below', this)" style="border-color: rgba(239, 68, 68, 0.4); color: #f87171;">📉 200 EMA Altı</button>
                 </div>
             </div>
             
@@ -591,11 +632,11 @@ HTML_PAGE = """<!DOCTYPE html>
                     <thead>
                         <tr>
                             <th>VARLIK</th><th>YÖN</th><th>SİNYAL ZAMANI</th><th>GİRİŞ ($)</th>
-                            <th>GÜNCEL ($)</th><th>ANLIK KAR / ZARAR</th><th>DURUM</th><th>HEDEFLER</th><th>AKSİYON</th>
+                            <th>GÜNCEL ($)</th><th>200 EMA & TREND</th><th>ANLIK KAR / ZARAR</th><th>DURUM</th><th>HEDEFLER</th><th>AKSİYON</th>
                         </tr>
                     </thead>
                     <tbody id="liveFeedTableBody">
-                        <tr><td colspan="9" style="text-align: center; padding: 18px; color: #64748b;">Henüz aktif sinyal taranmadı.</td></tr>
+                        <tr><td colspan="10" style="text-align: center; padding: 18px; color: #64748b;">Henüz aktif sinyal taranmadı.</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1078,7 +1119,7 @@ HTML_PAGE = """<!DOCTYPE html>
             if (badge) badge.innerText = `${feed.length} Sinyal (${activeCount} Aktif Pozisyon)`;
 
             if (feed.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; padding: 20px; color: #64748b;">Şu anda piyasada açık aktif işlem bulunmuyor (Eski TP/SL olmuş işlemler filtrelendi). Yeni bir Reclaim sinyali oluştuğunda burada canlı listelenecektir.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="10" style="text-align: center; padding: 20px; color: #64748b;">Şu anda piyasada açık aktif işlem bulunmuyor (Eski TP/SL olmuş işlemler filtrelendi). Yeni bir Reclaim sinyali oluştuğunda burada canlı listelenecektir.</td></tr>`;
                 return;
             }
 
@@ -1099,6 +1140,12 @@ HTML_PAGE = """<!DOCTYPE html>
                     <td style="color: #cbd5e1;">${f.mins_ago === 0 ? 'Tam Şimdi' : f.mins_ago + ' dk önce'} (${f.time})</td>
                     <td style="font-weight: 600; color: #fff;">$${formatPrice(f.entry_price, f.dec).replace("$", "")}</td>
                     <td style="font-weight: 600; color: #818cf8;">$${formatPrice(f.cur_price, f.dec).replace("$", "")}</td>
+                    <td>
+                        <div style="font-family: monospace; font-size: 11px; color: #cbd5e1;">$${formatPrice(f.ema_val, f.dec).replace("$", "")}</div>
+                        <span class="badge ${f.ema_crossed ? 'badge-amber' : (f.ema_pos === 'Üstünde' ? 'badge-green' : 'badge-red')}" style="font-size: 9px; font-weight: 700; margin-top: 3px; display: inline-block;">
+                            ${f.ema_badge_text || (f.cur_price >= f.ema_val ? '🟢 EMA Üstü' : '🔴 EMA Altı')}
+                        </span>
+                    </td>
                     <td style="font-weight: 800; color: ${pnlPositive ? '#34d399' : '#f87171'};">${pnlPositive ? '+' : ''}${f.pnl_pct.toFixed(2)}%</td>
                     <td>${statusBadge}</td>
                     <td style="font-size: 10px; color: #94a3b8;">SL: ${formatPrice(f.sl, f.dec)} | TP: ${formatPrice(f.tp, f.dec)}</td>
@@ -1136,6 +1183,15 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
                 if (activeStatusFilter === 'forex') {
                     return p.category === 'forex';
+                }
+                if (activeStatusFilter === 'ema_cross') {
+                    return p.ema_crossed === true;
+                }
+                if (activeStatusFilter === 'ema_above') {
+                    return p.price >= p.ema_val;
+                }
+                if (activeStatusFilter === 'ema_below') {
+                    return p.price < p.ema_val;
                 }
 
                 // Yalnızca kullanıcı özel olarak etiket elediğinde izleme listesini uygula
@@ -1188,7 +1244,15 @@ HTML_PAGE = """<!DOCTYPE html>
 
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <span class="badge ${p.state.includes('RECLAIM') ? (isLongSig?'badge-green':'badge-red') : (p.state.includes('Sweep')?'badge-amber':'badge-indigo')}">${p.state}</span>
-                        <span style="font-size: 10px; color: #64748b; font-family: monospace;">200 EMA: ${p.ema_state || 'Nötr'}</span>
+                    </div>
+
+                    <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); padding: 5px 8px; border-radius: 6px; font-size: 11px; margin: 3px 0;">
+                        <span style="color: #94a3b8; font-family: monospace; display: flex; align-items: center; gap: 4px;">
+                            📈 <b>200 EMA:</b> <span style="color: #e2e8f0; font-weight: 600;">${formatPrice(p.ema_val, p.dec)}</span>
+                        </span>
+                        <span class="badge ${p.ema_crossed ? 'badge-amber' : (p.price >= p.ema_val ? 'badge-green' : 'badge-red')}" style="font-size: 9px; font-weight: 700;">
+                            ${p.ema_badge_text || (p.price >= p.ema_val ? '🟢 EMA Üstü' : '🔴 EMA Altı')}
+                        </span>
                     </div>
 
                     <div class="signal-targets">
