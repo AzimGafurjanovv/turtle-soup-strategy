@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: turtle-soup-radar
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --web
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
